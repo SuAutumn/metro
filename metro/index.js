@@ -3,12 +3,14 @@ const assert = require("assert");
 const fs = require("fs");
 
 function cleanUp(folderPath) {
-  if (fs.existsSync(folderPath)) {
+  try {
     fs.rmSync(folderPath, { recursive: true, force: true });
-  } else {
+  } catch (error) {
+    console.info(`Error cleaning up ${folderPath}:`, error?.message);
+  } finally {
+    fs.mkdirSync(folderPath);
+    console.log(`Clean up ${folderPath} folder.`);
   }
-  fs.mkdirSync(folderPath);
-  console.log(`Clean up ${folderPath} folder.`);
 }
 
 async function main() {
