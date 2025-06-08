@@ -1,18 +1,11 @@
-import metroConfig from "@react-native/metro-config";
-import { fileURLToPath } from "url";
-import { dirname } from "path";
+const { getDefaultConfig, mergeConfig } = require("@react-native/metro-config");
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const defaultConfig = metroConfig.getDefaultConfig(__dirname);
+const defaultConfig = getDefaultConfig(__dirname);
 
-console.log(Object.keys(defaultConfig));
-
-const {
-  transformer: { babelTransformerPath },
-  transformerPath,
-} = defaultConfig;
-console.log(transformerPath);
-console.log(babelTransformerPath);
-
-export default defaultConfig;
+module.exports = mergeConfig(defaultConfig, {
+  transformer: {
+    // 禁用 minify，通过设置 minifierPath 为 null 或自定义空 minifier
+    minifierPath: require.resolve("./fake-minifier"),
+    babelTransformerPath: require.resolve("./metro/babel-transformer"),
+  },
+});
