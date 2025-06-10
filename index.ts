@@ -1,18 +1,16 @@
-function greet(name) {
+function greet(name: string): string {
   return `Hello, ${name}!`;
 }
 
-const sayBye = function (name) {
+const sayBye = function (name: string) {
   return `Goodbye, ${name}!`;
 };
-const sayHi = (name) => `Hi, ${name}!`;
+
+const sayHi = (name: string) => `Hi, ${name}!`;
 
 const a = {
   c: () => {
     return "c";
-  },
-  d() {
-    return "d";
   },
   sayHi,
 };

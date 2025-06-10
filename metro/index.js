@@ -18,7 +18,7 @@ async function main() {
   const config = await Metro.loadConfig();
   assert(config, "配置错误");
   await Metro.runBuild(config, {
-    entry: "index.js",
+    entry: "index.ts",
     out: "./dist/bundle.js",
   });
 }
