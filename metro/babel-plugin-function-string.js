@@ -116,28 +116,30 @@ class FunctionString {
 
   generateFunctionStringNode() {
     const t = this.types;
-    return t.functionExpression(
+    const functionStringNode = t.functionExpression(
       null,
       [],
       t.blockStatement([
         t.returnStatement(t.stringLiteral(this.getFunctionString())),
       ])
     );
+    functionStringNode[FunctionString.SELF_GENERATE] = true;
+    return functionStringNode;
   }
 
   /**
    * 生成一个表达式语句，将自定义的 toString 实现赋值给当前函数的 toString 属性。
    * 使用传入的 functionStringNode 作为 toString 的实现。
-   * @param {string | undefined} functionName - 函数名称
-   * @param {import("@babel/types").Expression } functionStringNode - 表示函数字符串实现的 AST 节点。
+   * @param {import("@babel/types").Node} functionNode - 函数名称
    * @returns {import("@babel/types").Statement | undefined} 返回赋值 toString 属性的表达式语句 AST 节点，
    *   如果未找到函数或函数名则返回 undefined。
    */
-  generateStatementInProgram(functionName, functionStringNode) {
-    const t = this.types;
+  generateStatementInProgram(functionNode) {
+    const functionName = functionNode.id?.name;
     if (!functionName) {
       return;
     }
+    const t = this.types;
     return t.expressionStatement(
       t.assignmentExpression(
         "=",
@@ -145,7 +147,7 @@ class FunctionString {
           t.identifier(functionName),
           t.identifier("toString")
         ),
-        functionStringNode
+        this.generateFunctionStringNode()
       )
     );
   }
@@ -158,10 +160,9 @@ class FunctionString {
    * 该表达式返回带有自定义 toString 方法的函数对象。
    *
    * @param {import("@babel/types").Node } functionNode - 表示函数字符串实现的 AST 节点。
-   * @param {import("@babel/types").Expression } functionStringNode - 表示函数字符串实现的 AST 节点。
    * @returns {import("@babel/types").Statement| undefined} 返回赋值 toString 属性的表达式语句 AST 节点，
    */
-  generateStatementInObjectExpression(functionNode, functionStringNode) {
+  generateStatementInObjectExpression(functionNode) {
     const tmp = template(`(() => {
         const _tmpFunc = FUNCTION;
         _tmpFunc.toString = FUNCTION_STRING;
@@ -169,7 +170,7 @@ class FunctionString {
       })()`);
     return tmp({
       FUNCTION: functionNode,
-      FUNCTION_STRING: functionStringNode,
+      FUNCTION_STRING: this.generateFunctionStringNode(),
     });
   }
 
@@ -177,19 +178,12 @@ class FunctionString {
    * 生成 toString 方法节点，并插入到合适的位置
    */
   insertFunctionStringNode() {
-    const t = this.types;
     const functionPath = this.getFunction();
     if (!functionPath) {
       return;
     }
-    const toStringFunctionNode = this.generateFunctionStringNode(); // 标记该节点为插件生成
-    toStringFunctionNode[FunctionString.SELF_GENERATE] = true;
     if (this.isFunctionInProgram()) {
-      const functionName = functionPath.node.id?.name;
-      const statement = this.generateStatementInProgram(
-        functionName,
-        toStringFunctionNode
-      );
+      const statement = this.generateStatementInProgram(functionPath.node);
       if (statement) {
         this.insertAfter(statement, functionPath);
       }
@@ -197,12 +191,9 @@ class FunctionString {
     }
     if (this.isFunctionInObjectExpression()) {
       const statement = this.generateStatementInObjectExpression(
-        functionPath.node,
-        toStringFunctionNode
+        functionPath.node
       );
-      if (statement) {
-        this.path.replaceWith(statement);
-      }
+      this.path.replaceWith(statement);
     }
   }
 
