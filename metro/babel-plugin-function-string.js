@@ -10,6 +10,8 @@ const micromatch = require("micromatch");
  * 该方法会在函数被调用时返回其源代码字符串。
  */
 class FunctionString {
+  /** 插件生成ast节点标记 */
+  static SELF_GENERATE = Symbol("plugin_transform_function_string");
   /**
    * @param {import("@babel/core").NodePath} path
    * @param {import("@babel/core").types} types
@@ -73,7 +75,7 @@ class FunctionString {
    */
   isFunctionInObjectExpressionOrProgram() {
     // 不是目标函数 或者 节点是由插件生成的，直接返回 false
-    if (!this.isFunction() || this.path.node._generatedByPlugin) {
+    if (!this.isFunction() || this.path.node[FunctionString.SELF_GENERATE]) {
       return false;
     }
     return this.isFunctionInObjectExpression() || this.isFunctionInProgram();
@@ -88,7 +90,6 @@ class FunctionString {
    * @returns {import('@babel/core').NodePath | null}
    */
   getFunction() {
-    const t = this.types;
     const { path } = this;
     if (path.isFunctionDeclaration()) {
       return path;
@@ -113,55 +114,95 @@ class FunctionString {
     return null;
   }
 
-  /**
-   * 生成 toString 方法节点，并插入到合适的位置
-   */
   generateFunctionStringNode() {
     const t = this.types;
-    const toStringFunctionNode = t.functionExpression(
+    return t.functionExpression(
       null,
       [],
       t.blockStatement([
         t.returnStatement(t.stringLiteral(this.getFunctionString())),
       ])
     );
-    // 标记该节点为插件生成
-    toStringFunctionNode._generatedByPlugin = true;
-    if (this.isFunctionInProgram()) {
-      const f = this.getFunction();
-      if (!f) {
-        return;
-      }
-      const name = f.node.id?.name;
-      if (!name) {
-        return;
-      }
-      const statement = t.expressionStatement(
-        t.assignmentExpression(
-          "=",
-          t.memberExpression(t.identifier(name), t.identifier("toString")),
-          toStringFunctionNode
-        )
-      );
-      this.insertAfter(statement, f);
+  }
+
+  /**
+   * 生成一个表达式语句，将自定义的 toString 实现赋值给当前函数的 toString 属性。
+   * 使用传入的 functionStringNode 作为 toString 的实现。
+   * @param {string | undefined} functionName - 函数名称
+   * @param {import("@babel/types").Expression } functionStringNode - 表示函数字符串实现的 AST 节点。
+   * @returns {import("@babel/types").Statement | undefined} 返回赋值 toString 属性的表达式语句 AST 节点，
+   *   如果未找到函数或函数名则返回 undefined。
+   */
+  generateStatementInProgram(functionName, functionStringNode) {
+    const t = this.types;
+    if (!functionName) {
       return;
     }
-    if (this.isFunctionInObjectExpression()) {
-      const f = this.getFunction();
-      if (!f) {
-        return;
-      }
-      const tmp = template(`(() => {
+    return t.expressionStatement(
+      t.assignmentExpression(
+        "=",
+        t.memberExpression(
+          t.identifier(functionName),
+          t.identifier("toString")
+        ),
+        functionStringNode
+      )
+    );
+  }
+
+  /**
+   * 在对象表达式中生成一个包含自定义 toString 方法的函数表达式语句。
+   *
+   * 该方法会获取当前作用域下的函数节点，并为其动态添加一个 toString 方法，
+   * 使其返回指定的函数字符串节点。最终返回一个立即执行函数表达式（IIFE），
+   * 该表达式返回带有自定义 toString 方法的函数对象。
+   *
+   * @param {import("@babel/types").Node } functionNode - 表示函数字符串实现的 AST 节点。
+   * @param {import("@babel/types").Expression } functionStringNode - 表示函数字符串实现的 AST 节点。
+   * @returns {import("@babel/types").Statement| undefined} 返回赋值 toString 属性的表达式语句 AST 节点，
+   */
+  generateStatementInObjectExpression(functionNode, functionStringNode) {
+    const tmp = template(`(() => {
         const _tmpFunc = FUNCTION;
         _tmpFunc.toString = FUNCTION_STRING;
         return _tmpFunc;
       })()`);
-      const statement = tmp({
-        FUNCTION: f.node,
-        FUNCTION_STRING: toStringFunctionNode,
-      });
-      this.path.replaceWith(statement);
+    return tmp({
+      FUNCTION: functionNode,
+      FUNCTION_STRING: functionStringNode,
+    });
+  }
+
+  /**
+   * 生成 toString 方法节点，并插入到合适的位置
+   */
+  insertFunctionStringNode() {
+    const t = this.types;
+    const functionPath = this.getFunction();
+    if (!functionPath) {
       return;
+    }
+    const toStringFunctionNode = this.generateFunctionStringNode(); // 标记该节点为插件生成
+    toStringFunctionNode[FunctionString.SELF_GENERATE] = true;
+    if (this.isFunctionInProgram()) {
+      const functionName = functionPath.node.id?.name;
+      const statement = this.generateStatementInProgram(
+        functionName,
+        toStringFunctionNode
+      );
+      if (statement) {
+        this.insertAfter(statement, functionPath);
+      }
+      return;
+    }
+    if (this.isFunctionInObjectExpression()) {
+      const statement = this.generateStatementInObjectExpression(
+        functionPath.node,
+        toStringFunctionNode
+      );
+      if (statement) {
+        this.path.replaceWith(statement);
+      }
     }
   }
 
@@ -171,7 +212,6 @@ class FunctionString {
    * @param {import('@babel/core').NodePath} path
    */
   insertAfter(statement, path) {
-    const t = this.types;
     if (path.isFunctionDeclaration()) {
       path.insertAfter(statement);
       return;
@@ -224,6 +264,7 @@ class FunctionString {
       retainLines: false,
       retainFunctionParens: true,
       concise: true,
+      comments: false,
     }).code.replace(/;$/, ""); // 去掉末尾的分号
   }
 }
@@ -235,22 +276,26 @@ class FunctionString {
  * 该方法会在函数被调用时返回其源代码字符串。
  * @param {import("@babel/core")} babel - The Babel object.
  * @param {import("@babel/core").types} babel.types - Babel types utility for AST manipulation.
- * @param {{include: string}} options - Options for the plugin.
+ * @param {{include: string[]}} options - Options for the plugin.
  * @returns {import("@babel/core").PluginObj} A Babel visitor object to traverse and transform the AST.
  */
 module.exports = function ({ types: t }, options = {}) {
-  const { include } = options;
+  const { include = [] } = options;
   return {
     visitor: {
       Function(path, state) {
         const filename =
           state.file && state.file.opts && state.file.opts.filename;
-        if (include && filename && !micromatch.isMatch(filename, include)) {
+        if (
+          filename &&
+          include.length > 0 &&
+          include.every((v) => !micromatch.isMatch(filename, v))
+        ) {
           return;
         }
         const functionString = new FunctionString(path, t, babel);
         if (functionString.isFunctionInObjectExpressionOrProgram()) {
-          functionString.generateFunctionStringNode();
+          functionString.insertFunctionStringNode();
         }
       },
     },
