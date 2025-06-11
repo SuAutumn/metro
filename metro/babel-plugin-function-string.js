@@ -1,6 +1,5 @@
 const generate = require("@babel/generator").default;
 const template = require("@babel/template").default;
-const babel = require("@babel/core");
 const micromatch = require("micromatch");
 
 /**
@@ -15,12 +14,10 @@ class FunctionString {
   /**
    * @param {import("@babel/core").NodePath} path
    * @param {import("@babel/core").types} types
-   * @param {import("@babel/core")} myBabel
    */
-  constructor(path, types, myBabel) {
+  constructor(path, types) {
     this.path = path;
     this.types = types;
-    this.myBabel = myBabel;
   }
 
   /**
@@ -221,42 +218,12 @@ class FunctionString {
    * @returns {string}
    */
   getFunctionString() {
-    const t = this.types;
-    const { path } = this;
-    const { myBabel } = this;
-    const cloneNode = t.cloneNode(path.node);
-
-    const { ast } = myBabel.transformFromAstSync(
-      t.file(
-        t.program(
-          [
-            t.isStatement(cloneNode)
-              ? cloneNode
-              : t.expressionStatement(cloneNode),
-          ],
-          [],
-          "module"
-        )
-      ),
-      null,
-      {
-        plugins: ["@babel/plugin-transform-typescript"],
-        ast: true,
-        code: false,
-        configFile: false,
-      }
-    );
-
-    const codeNode = t.isExpressionStatement(ast.program.body[0])
-      ? ast.program.body[0].expression
-      : ast.program.body[0];
-
-    return generate(codeNode, {
+    return generate(this.path.node, {
+      comments: false,
       retainLines: false,
       retainFunctionParens: true,
       concise: true,
-      comments: false,
-    }).code.replace(/;$/, ""); // 去掉末尾的分号
+    }).code;
   }
 }
 
@@ -274,20 +241,21 @@ module.exports = function ({ types: t }, options = {}) {
   const { include = [] } = options;
   return {
     visitor: {
-      Function(path, state) {
-        const filename =
-          state.file && state.file.opts && state.file.opts.filename;
-        if (
-          filename &&
-          include.length > 0 &&
-          include.every((v) => !micromatch.isMatch(filename, v))
-        ) {
-          return;
-        }
-        const functionString = new FunctionString(path, t, babel);
-        if (functionString.isFunctionInObjectExpressionOrProgram()) {
-          functionString.insertFunctionStringNode();
-        }
+      Function: {
+        exit(path, state) {
+          const filename = state.file.opts.filename;
+          if (
+            !filename ||
+            include.length === 0 ||
+            include.every((v) => !micromatch.isMatch(filename, v))
+          ) {
+            return;
+          }
+          const functionString = new FunctionString(path, t);
+          if (functionString.isFunctionInObjectExpressionOrProgram()) {
+            functionString.insertFunctionStringNode();
+          }
+        },
       },
     },
   };
