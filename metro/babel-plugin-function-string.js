@@ -1,6 +1,7 @@
 const generate = require("@babel/generator").default;
 const template = require("@babel/template").default;
 const micromatch = require("micromatch");
+const nodeJsPath = require("path");
 
 /**
  * 给function添加function.toString方法
@@ -9,8 +10,8 @@ const micromatch = require("micromatch");
  * 该方法会在函数被调用时返回其源代码字符串。
  */
 class FunctionString {
-  /** 插件生成ast节点标记 */
-  static SELF_GENERATE = Symbol("plugin_transform_function_string");
+  /** 已经处理的节点 或者 插件生成ast节点标记，可以跳过 */
+  static SKIP_NODE = Symbol("plugin_transform_function_string");
   /**
    * @param {import("@babel/core").NodePath} path
    * @param {import("@babel/core").types} types
@@ -72,7 +73,7 @@ class FunctionString {
    */
   isFunctionInObjectExpressionOrProgram() {
     // 不是目标函数 或者 节点是由插件生成的，直接返回 false
-    if (!this.isFunction() || this.path.node[FunctionString.SELF_GENERATE]) {
+    if (!this.isFunction() || this.isNodeCanSkip(this.path.node)) {
       return false;
     }
     return this.isFunctionInObjectExpression() || this.isFunctionInProgram();
@@ -111,27 +112,40 @@ class FunctionString {
     return null;
   }
 
-  generateFunctionStringNode() {
+  generateFunctionStringNode(functionString) {
     const t = this.types;
-    const functionStringNode = t.functionExpression(
+    return t.functionExpression(
       null,
       [],
-      t.blockStatement([
-        t.returnStatement(t.stringLiteral(this.getFunctionString())),
-      ])
+      t.blockStatement([t.returnStatement(t.stringLiteral(functionString))])
     );
-    functionStringNode[FunctionString.SELF_GENERATE] = true;
-    return functionStringNode;
+  }
+
+  /**
+   * 标记节点已被处理
+   * @param {import("@babel/types").Node} node ast节点
+   */
+  markNodeCanSkip(node) {
+    node[FunctionString.SKIP_NODE] = true;
+  }
+
+  /**
+   * 是否可以不处理该节点
+   * @returns {boolean}
+   */
+  isNodeCanSkip(node) {
+    return node[FunctionString.SKIP_NODE];
   }
 
   /**
    * 生成一个表达式语句，将自定义的 toString 实现赋值给当前函数的 toString 属性。
    * 使用传入的 functionStringNode 作为 toString 的实现。
-   * @param {import("@babel/types").Node} functionNode - 函数名称
+   * @param {import("@babel/types").Node} functionNode - 函数节点
+   * @param {import("@babel/types").Node} functionStringNode - 函数源码节点
    * @returns {import("@babel/types").Statement | undefined} 返回赋值 toString 属性的表达式语句 AST 节点，
    *   如果未找到函数或函数名则返回 undefined。
    */
-  generateStatementInProgram(functionNode) {
+  generateStatementInProgram(functionNode, functionStringNode) {
     const functionName = functionNode.id?.name;
     if (!functionName) {
       return;
@@ -144,7 +158,7 @@ class FunctionString {
           t.identifier(functionName),
           t.identifier("toString")
         ),
-        this.generateFunctionStringNode()
+        functionStringNode
       )
     );
   }
@@ -156,10 +170,11 @@ class FunctionString {
    * 使其返回指定的函数字符串节点。最终返回一个立即执行函数表达式（IIFE），
    * 该表达式返回带有自定义 toString 方法的函数对象。
    *
-   * @param {import("@babel/types").Node } functionNode - 表示函数字符串实现的 AST 节点。
+   * @param {import("@babel/types").Node } functionNode - 表示函数节点。
+   * @param {import("@babel/types").Node } functionStringNode - 表示函数字符串实现的 AST 节点。
    * @returns {import("@babel/types").Statement| undefined} 返回赋值 toString 属性的表达式语句 AST 节点，
    */
-  generateStatementInObjectExpression(functionNode) {
+  generateStatementInObjectExpression(functionNode, functionStringNode) {
     const tmp = template(`(() => {
         const _tmpFunc = FUNCTION;
         _tmpFunc.toString = FUNCTION_STRING;
@@ -167,8 +182,40 @@ class FunctionString {
       })()`);
     return tmp({
       FUNCTION: functionNode,
-      FUNCTION_STRING: this.generateFunctionStringNode(),
+      FUNCTION_STRING: functionStringNode,
     });
+  }
+
+  insertFunctionStringNodeInProgram(functionPath) {
+    const functionStringNode = this.generateFunctionStringNode(
+      this.getFunctionString()
+    );
+    const statement = this.generateStatementInProgram(
+      functionPath.node,
+      functionStringNode
+    );
+    if (!statement) {
+      return;
+    }
+    const targetPath = this.getInsertTargetPath(functionPath);
+    if (targetPath) {
+      this.markNodeCanSkip(this.path.node);
+      this.markNodeCanSkip(functionStringNode);
+      targetPath.insertAfter(statement);
+    }
+  }
+
+  insertFunctionStringNodeInObjectExpression(functionPath) {
+    const functionStringNode = this.generateFunctionStringNode(
+      this.getFunctionString()
+    );
+    const statement = this.generateStatementInObjectExpression(
+      functionPath.node,
+      functionStringNode
+    );
+    this.markNodeCanSkip(this.path.node);
+    this.markNodeCanSkip(functionStringNode);
+    this.path.replaceWith(statement);
   }
 
   /**
@@ -180,37 +227,28 @@ class FunctionString {
       return;
     }
     if (this.isFunctionInProgram()) {
-      const statement = this.generateStatementInProgram(functionPath.node);
-      if (statement) {
-        this.insertAfter(statement, functionPath);
-      }
-      return;
-    }
-    if (this.isFunctionInObjectExpression()) {
-      const statement = this.generateStatementInObjectExpression(
-        functionPath.node
-      );
-      this.path.replaceWith(statement);
+      this.insertFunctionStringNodeInProgram(functionPath);
+    } else if (this.isFunctionInObjectExpression()) {
+      this.insertFunctionStringNodeInObjectExpression(functionPath);
     }
   }
 
   /**
-   * 在指定 path 后插入语句
-   * @param {import("@babel/core").Node} statement
+   * 寻找合适的path，以便在 path 后插入语句
    * @param {import('@babel/core').NodePath} path
+   * @return {import('@babel/core').NodePath | null}
    */
-  insertAfter(statement, path) {
+  getInsertTargetPath(path) {
     if (path.isFunctionDeclaration()) {
-      path.insertAfter(statement);
-      return;
+      return path;
     }
     if (path.isVariableDeclarator()) {
       const { parentPath } = path;
       if (parentPath.isVariableDeclaration()) {
-        parentPath.insertAfter(statement);
-        return;
+        return parentPath;
       }
     }
+    return null;
   }
 
   /**
@@ -243,11 +281,13 @@ module.exports = function ({ types: t }, options = {}) {
     visitor: {
       Function: {
         exit(path, state) {
-          const filename = state.file.opts.filename;
+          const { filename, root } = state.file.opts;
           if (
             !filename ||
             include.length === 0 ||
-            include.every((v) => !micromatch.isMatch(filename, v))
+            include.every(
+              (v) => !micromatch.isMatch(nodeJsPath.relative(root, filename), v)
+            )
           ) {
             return;
           }
