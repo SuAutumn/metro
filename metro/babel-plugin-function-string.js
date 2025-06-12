@@ -283,17 +283,17 @@ module.exports = function ({ types: t }, options = {}) {
         exit(path, state) {
           const { filename, root } = state.file.opts;
           if (
-            !filename ||
-            include.length === 0 ||
-            include.every(
-              (v) => !micromatch.isMatch(nodeJsPath.relative(root, filename), v)
+            filename &&
+            root &&
+            include.length > 0 &&
+            include.some((v) =>
+              micromatch.isMatch(nodeJsPath.relative(root, filename), v)
             )
           ) {
-            return;
-          }
-          const functionString = new FunctionString(path, t);
-          if (functionString.isFunctionInObjectExpressionOrProgram()) {
-            functionString.insertFunctionStringNode();
+            const functionString = new FunctionString(path, t);
+            if (functionString.isFunctionInObjectExpressionOrProgram()) {
+              functionString.insertFunctionStringNode();
+            }
           }
         },
       },
