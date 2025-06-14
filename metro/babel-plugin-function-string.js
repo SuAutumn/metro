@@ -215,7 +215,8 @@ class FunctionString {
     );
     this.markNodeCanSkip(this.path.node);
     this.markNodeCanSkip(functionStringNode);
-    this.path.replaceWith(statement);
+    /* 此时this.path是functionExpression，替换以后保持token类型一致 */
+    this.path.replaceWith(statement.expression);
   }
 
   /**
